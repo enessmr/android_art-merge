@@ -49,6 +49,7 @@ using helpers::DRegisterFrom;
 using helpers::DWARFReg;
 using helpers::HighDRegisterFrom;
 using helpers::HighRegisterFrom;
+using helpers::HighSRegisterFrom;
 using helpers::InputDRegisterAt;
 using helpers::InputOperandAt;
 using helpers::InputRegister;
@@ -2369,8 +2370,8 @@ CodeGeneratorARMVIXL::CodeGeneratorARMVIXL(HGraph* graph,
   AddAllocatedRegister(Location::RegisterLocation(LR));
   // Give D30 and D31 as scratch register to VIXL. The register allocator only works on
   // S0-S31, which alias to D0-D15.
-  GetVIXLAssembler()->GetScratchVRegisterList()->Combine(d31);
-  GetVIXLAssembler()->GetScratchVRegisterList()->Combine(d30);
+  // GetVIXLAssembler()->GetScratchVRegisterList()->Combine(d31);
+  // GetVIXLAssembler()->GetScratchVRegisterList()->Combine(d30);
 }
 
 void JumpTableARMVIXL::EmitTable(CodeGeneratorARMVIXL* codegen) {
@@ -6820,9 +6821,11 @@ void ParallelMoveResolverARMVIXL::EmitMove(size_t index) {
     }
   } else if (source.IsDoubleStackSlot()) {
     if (destination.IsDoubleStackSlot()) {
-      vixl32::DRegister temp = temps.AcquireD();
-      GetAssembler()->LoadDFromOffset(temp, sp, source.GetStackIndex());
-      GetAssembler()->StoreDToOffset(temp, sp, destination.GetStackIndex());
+      vixl32::Register temp = temps.Acquire();
+      GetAssembler()->LoadFromOffset(kLoadWord, temp, sp, source.GetStackIndex());
+      GetAssembler()->StoreToOffset(kStoreWord, temp, sp, destination.GetStackIndex());
+      GetAssembler()->LoadFromOffset(kLoadWord, temp, sp, source.GetStackIndex()+kRegisterSize);
+      GetAssembler()->StoreToOffset(kStoreWord, temp, sp, destination.GetStackIndex()+kRegisterSize);
     } else if (destination.IsRegisterPair()) {
       DCHECK(ExpectedPairLayout(destination));
       GetAssembler()->LoadFromOffset(
@@ -6962,37 +6965,46 @@ void ParallelMoveResolverARMVIXL::EmitSwap(size_t index) {
     __ Vmov(SRegisterFrom(source), SRegisterFrom(destination));
     __ Vmov(SRegisterFrom(destination), temp);
   } else if (source.IsRegisterPair() && destination.IsRegisterPair()) {
-    vixl32::DRegister temp = temps.AcquireD();
-    __ Vmov(temp, LowRegisterFrom(source), HighRegisterFrom(source));
+    vixl32::Register temp = temps.Acquire();
+    __ Mov(temp, LowRegisterFrom(source));
     __ Mov(LowRegisterFrom(source), LowRegisterFrom(destination));
+    __ Mov(LowRegisterFrom(destination), temp);
+    __ Mov(temp, HighRegisterFrom(source));
     __ Mov(HighRegisterFrom(source), HighRegisterFrom(destination));
-    __ Vmov(LowRegisterFrom(destination), HighRegisterFrom(destination), temp);
+    __ Mov(HighRegisterFrom(destination), temp);
   } else if (source.IsRegisterPair() || destination.IsRegisterPair()) {
+    vixl32::Register temp = temps.Acquire();
     vixl32::Register low_reg = LowRegisterFrom(source.IsRegisterPair() ? source : destination);
+    vixl32::Register high_reg = HighRegisterFrom(source.IsRegisterPair() ? source : destination);
     int mem = source.IsRegisterPair() ? destination.GetStackIndex() : source.GetStackIndex();
     DCHECK(ExpectedPairLayout(source.IsRegisterPair() ? source : destination));
-    vixl32::DRegister temp = temps.AcquireD();
-    __ Vmov(temp, low_reg, vixl32::Register(low_reg.GetCode() + 1));
-    GetAssembler()->LoadFromOffset(kLoadWordPair, low_reg, sp, mem);
-    GetAssembler()->StoreDToOffset(temp, sp, mem);
+    __ Mov(temp, low_reg);
+    GetAssembler()->LoadFromOffset(kLoadWord, low_reg, sp, mem);
+    GetAssembler()->StoreToOffset(kStoreWord, temp, sp, mem);
+    __ Mov(temp, high_reg);
+    GetAssembler()->LoadFromOffset(kLoadWord, high_reg, sp, mem+kRegisterSize);
+    GetAssembler()->StoreToOffset(kStoreWord, temp, sp, mem+kRegisterSize);
   } else if (source.IsFpuRegisterPair() && destination.IsFpuRegisterPair()) {
-    vixl32::DRegister first = DRegisterFrom(source);
-    vixl32::DRegister second = DRegisterFrom(destination);
-    vixl32::DRegister temp = temps.AcquireD();
-    __ Vmov(temp, first);
-    __ Vmov(first, second);
-    __ Vmov(second, temp);
+    vixl32::Register temp = temps.Acquire();
+    __ Vmov(temp, LowSRegisterFrom(source));
+    __ Vmov(LowSRegisterFrom(source), LowSRegisterFrom(destination));
+    __ Vmov(LowSRegisterFrom(destination), temp);
+    __ Vmov(temp, HighSRegisterFrom(source));
+    __ Vmov(HighSRegisterFrom(source), HighSRegisterFrom(destination));
+    __ Vmov(HighSRegisterFrom(destination), temp);
   } else if (source.IsFpuRegisterPair() || destination.IsFpuRegisterPair()) {
-    vixl32::DRegister reg = source.IsFpuRegisterPair()
-        ? DRegisterFrom(source)
-        : DRegisterFrom(destination);
+    vixl32::Register temp = temps.Acquire();
+    Location reg = source.IsFpuRegisterPair() ? source : destination;
     int mem = source.IsFpuRegisterPair()
         ? destination.GetStackIndex()
         : source.GetStackIndex();
-    vixl32::DRegister temp = temps.AcquireD();
-    __ Vmov(temp, reg);
-    GetAssembler()->LoadDFromOffset(reg, sp, mem);
-    GetAssembler()->StoreDToOffset(temp, sp, mem);
+    __ Vmov(temp, LowSRegisterFrom(reg));
+    GetAssembler()->LoadSFromOffset(LowSRegisterFrom(reg), sp, mem);
+    GetAssembler()->StoreToOffset(kStoreWord, temp, sp, mem);
+    __ Vmov(temp, HighSRegisterFrom(reg));
+    GetAssembler()->LoadSFromOffset(HighSRegisterFrom(reg), sp, mem+kRegisterSize);
+    GetAssembler()->StoreToOffset(kStoreWord, temp, sp, mem+kRegisterSize);
+
   } else if (source.IsFpuRegister() || destination.IsFpuRegister()) {
     vixl32::SRegister reg = source.IsFpuRegister()
         ? SRegisterFrom(source)
@@ -7005,12 +7017,8 @@ void ParallelMoveResolverARMVIXL::EmitSwap(size_t index) {
     GetAssembler()->LoadSFromOffset(reg, sp, mem);
     GetAssembler()->StoreToOffset(kStoreWord, temp, sp, mem);
   } else if (source.IsDoubleStackSlot() && destination.IsDoubleStackSlot()) {
-    vixl32::DRegister temp1 = temps.AcquireD();
-    vixl32::DRegister temp2 = temps.AcquireD();
-    __ Vldr(temp1, MemOperand(sp, source.GetStackIndex()));
-    __ Vldr(temp2, MemOperand(sp, destination.GetStackIndex()));
-    __ Vstr(temp1, MemOperand(sp, destination.GetStackIndex()));
-    __ Vstr(temp2, MemOperand(sp, source.GetStackIndex()));
+    Exchange(source.GetStackIndex(), destination.GetStackIndex());
+    Exchange(source.GetHighStackIndex(kArmWordSize), destination.GetHighStackIndex(kArmWordSize));
   } else {
     LOG(FATAL) << "Unimplemented" << source << " <-> " << destination;
   }

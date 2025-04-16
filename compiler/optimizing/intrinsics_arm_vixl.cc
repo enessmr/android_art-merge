@@ -2904,31 +2904,69 @@ static void GenBitCount(HInvoke* instr, DataType::Type type, ArmVIXLAssembler* a
   bool is_long = type == DataType::Type::kInt64;
   LocationSummary* locations = instr->GetLocations();
   Location in = locations->InAt(0);
-  vixl32::Register src_0 = is_long ? LowRegisterFrom(in) : RegisterFrom(in);
-  vixl32::Register src_1 = is_long ? HighRegisterFrom(in) : src_0;
-  vixl32::SRegister tmp_s = LowSRegisterFrom(locations->GetTemp(0));
-  vixl32::DRegister tmp_d = DRegisterFrom(locations->GetTemp(0));
+  vixl32::Register s0 = is_long ? LowRegisterFrom(in) : RegisterFrom(in);
+  vixl32::Register s1 = is_long ? HighRegisterFrom(in) : s0;
   vixl32::Register  out_r = OutputRegister(instr);
 
-  // Move data from core register(s) to temp D-reg for bit count calculation, then move back.
-  // According to Cortex A57 and A72 optimization guides, compared to transferring to full D-reg,
-  // transferring data from core reg to upper or lower half of vfp D-reg requires extra latency,
-  // That's why for integer bit count, we use 'vmov d0, r0, r0' instead of 'vmov d0[0], r0'.
-  __ Vmov(tmp_d, src_1, src_0);     // Temp DReg |--src_1|--src_0|
-  __ Vcnt(Untyped8, tmp_d, tmp_d);  // Temp DReg |c|c|c|c|c|c|c|c|
-  __ Vpaddl(U8, tmp_d, tmp_d);      // Temp DReg |--c|--c|--c|--c|
-  __ Vpaddl(U16, tmp_d, tmp_d);     // Temp DReg |------c|------c|
+  // https://stackoverflow.com/a/15740270
+  UseScratchRegisterScope temps(assembler->GetVIXLAssembler());
+  vixl32::Register src_0 = RegisterFrom(locations->GetTemp(0));
+  vixl32::Register tmp = temps.Acquire();
+
+  __ Mov(src_0, s0);
+
+  __ Asrs(tmp, src_0, 1);
+  __ Bic(tmp, tmp, 0xAAAAAAAA);
+  __ Subs(src_0, src_0, tmp);
+
+  __ Asrs(tmp, src_0, 2);
+  __ Bic(out_r, tmp, 0xCCCCCCCC);
+  __ Bic(tmp, src_0, 0xCCCCCCCC);
+  __ Add(tmp, tmp, out_r);
+
+  __ Add(tmp, tmp, Operand(tmp, vixl32::LSR, 4));
+  __ Bic(src_0, tmp, 0xF0F0F0F0);
+  __ Mvn(tmp, 0xFEFEFEFE);
+  __ Mul(tmp, src_0,  tmp);
+  __ Asrs(out_r, tmp, 0x18);
+
   if (is_long) {
-    __ Vpaddl(U32, tmp_d, tmp_d);   // Temp DReg |--------------c|
+    vixl32::Register src_1 = RegisterFrom(locations->GetTemp(1));
+
+    __ Mov(src_1, s1);
+
+    __ Asrs(tmp, src_1, 1);
+    __ Bic(tmp, tmp, 0xAAAAAAAA);
+    __ Subs(src_1, src_1, tmp);
+
+    __ Asrs(tmp, src_1, 2);
+    __ Bic(src_0, tmp, 0xCCCCCCCC);
+    __ Bic(tmp, src_1, 0xCCCCCCCC);
+    __ Add(tmp, tmp, src_0);
+
+    __ Add(tmp, tmp, Operand(tmp, vixl32::LSR, 4));
+    __ Bic(src_1, tmp, 0xF0F0F0F0);
+    __ Mvn(tmp, 0xFEFEFEFE);
+    __ Mul(tmp, src_1,  tmp);
+    __ Asrs(src_1, tmp, 0x18);
+
+    __ Add(out_r, out_r, src_1);
   }
-  __ Vmov(out_r, tmp_s);
 }
 
-void IntrinsicLocationsBuilderARMVIXL::VisitIntegerBitCount(HInvoke* invoke) {
+/*void IntrinsicLocationsBuilderARMVIXL::VisitIntegerBitCount(HInvoke* invoke) {
   CreateIntToIntLocations(allocator_, invoke);
   invoke->GetLocations()->AddTemp(Location::RequiresFpuRegister());
-}
+} */
 
+// We will use basic. I was unsure what shall i use but AI helped. It said that FPU can even more make it laggy.
+// For optimization, we will use basic.
+void IntrinsicLocationsBuilderARMVIXL::VisitIntegerBitCount(HInvoke* invoke) {
+  CreateIntToIntLocations(arena_, invoke);
+  invoke->GetLocations()->AddTemp(Location::RequiresRegister());
+  invoke->GetLocations()->AddTemp(Location::RequiresRegister());
+}
+  
 void IntrinsicCodeGeneratorARMVIXL::VisitIntegerBitCount(HInvoke* invoke) {
   GenBitCount(invoke, DataType::Type::kInt32, GetAssembler());
 }

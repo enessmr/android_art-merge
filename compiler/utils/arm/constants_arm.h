@@ -40,6 +40,14 @@ namespace arm {
 // Constants for specific fields are defined in their respective named enums.
 // General constants are in an anonymous enum in class Instr.
 
+// We support both VFPv3-D16 and VFPv3-D32 profiles, but currently only one at
+// a time, so that compile time optimizations can be applied.
+// Warning: VFPv3-D32 is untested.
+#define VFPv3_D16
+#if defined(VFPv3_D16) == defined(VFPv3_D32)
+#error "Exactly one of VFPv3_D16 or VFPv3_D32 can be defined at a time."
+#endif
+
 // 4 bits option for the dmb instruction.
 // Order and values follows those of the ARM Architecture Reference Manual.
 enum DmbOptions {
@@ -76,6 +84,9 @@ enum DRegister {  // private marker to avoid generate-operator-out.py from proce
   D13 = 13,
   D14 = 14,
   D15 = 15,
+#ifdef VFPv3_D16
+  kNumberOfDRegisters = 16,
+#else
   D16 = 16,
   D17 = 17,
   D18 = 18,
@@ -93,6 +104,7 @@ enum DRegister {  // private marker to avoid generate-operator-out.py from proce
   D30 = 30,
   D31 = 31,
   kNumberOfDRegisters = 32,
+#endif
   kNumberOfOverlappingDRegisters = 16,
   kNoDRegister = -1,
 };
